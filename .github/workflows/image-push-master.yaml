@@ -20,7 +20,7 @@ jobs:
 
       - name: Login to Docker
         run: |
-            docker login -u zhugejingcheng  -p  1qaz@WSX quay.io
+            docker login -u inspurwyd  -p  dckr_pat_yMRt21vCZj0PlDl14xJiqSOHeVg
 
       - name: build and push ib-sriov-cni
         uses: docker/build-push-action@v4
