@@ -41,7 +41,8 @@ func LoadDeviceInfo(netConf *types.NetConf) error {
 	if netConf.DeviceID != "" {
 		// Get rest of the VF information
 		var err error
-		pfName, vfID := "", 0 
+		pfName, vfID := "", 0
+		fmt.Errorf("PFOnly: %v, PFOnlyIsRDMA:%v", netConf.PFOnly, netConf.PFOnlyIsRDMA)
 		if netConf.PFOnly {
 			pfName, vfID, err = getPFInfo(netConf.DeviceID)
 		} else {

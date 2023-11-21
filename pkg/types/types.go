@@ -27,7 +27,7 @@ type NetConf struct {
 	RdmaNetState        rdmatypes.RdmaNetState
 	RuntimeConfig       RuntimeConf `json:"runtimeConfig,omitempty"`
 	PFOnly              bool   `json:"pfOnly,omitempty"`
-	PFOnlyIsRDMA        bool   `json:"pfOnly,omitempty"`
+	PFOnlyIsRDMA        bool   `json:"pfOnlyIsRDMA,omitempty"`
 	Args                struct {
 		CNI map[string]string `json:"cni"`
 	} `json:"args"`
