@@ -40,7 +40,13 @@ func LoadDeviceInfo(netConf *types.NetConf) error {
 	// DeviceID takes precedence; if we are given a VF pciaddr then work from there
 	if netConf.DeviceID != "" {
 		// Get rest of the VF information
-		pfName, vfID, err := getVfInfo(netConf.DeviceID)
+		var err error
+		pfName, vfID := "", 0 
+		if netConf.PFOnly {
+			pfName, vfID, err = getPFInfo(netConf.DeviceID)
+		} else {
+			pfName, vfID, err = getVfInfo(netConf.DeviceID)
+		}
 		if err != nil {
 			return fmt.Errorf("load config: failed to get VF information: %q", err)
 		}
@@ -69,6 +75,16 @@ func getVfInfo(vfPci string) (string, int, error) {
 	}
 
 	vfID, err = utils.GetVfid(vfPci, pf)
+	if err != nil {
+		return "", vfID, err
+	}
+
+	return pf, vfID, nil
+}
+func getPFInfo(vfPci string) (string, int, error) {
+	var vfID int
+
+	pf, err := utils.GetPfNameByVFPci(vfPci)
 	if err != nil {
 		return "", vfID, err
 	}

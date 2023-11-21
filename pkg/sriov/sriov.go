@@ -164,6 +164,58 @@ func (s *sriovManager) SetupVF(conf *types.NetConf, podifName, cid string, netns
 	return nil
 }
 
+
+// SetupPF sets up a PF in Pod netns
+func (s *sriovManager) SetupPF(conf *types.NetConf, podifName, cid string, netns ns.NetNS) error {
+	// Get vf name since it may have been changed after the rebind in ApplyVFConfig which is called before
+	linkName, err := utils.GetVFLinkNames(conf.DeviceID)
+	if err != nil || linkName == "" {
+		return fmt.Errorf("failed to get VF %s name after rebind with error, %q", conf.DeviceID, err)
+	}
+
+	linkObj, err := s.nLink.LinkByName(linkName)
+	if err != nil {
+		return fmt.Errorf("error getting VF netdevice with name %s", linkName)
+	}
+
+	// tempName used as intermediary name to avoid name conflicts
+	tempName := fmt.Sprintf("vfdev%d", linkObj.Attrs().Index)
+
+	// 1. Set link down
+	if err := s.nLink.LinkSetDown(linkObj); err != nil {
+		return fmt.Errorf("failed to down vf device %q: %v", linkName, err)
+	}
+
+	// 2. Set temp name
+	if err := s.nLink.LinkSetName(linkObj, tempName); err != nil {
+		return fmt.Errorf("error setting temp IF name %s for %s", tempName, linkName)
+	}
+
+	// 3. Change netns
+	if err := s.nLink.LinkSetNsFd(linkObj, int(netns.Fd())); err != nil {
+		return fmt.Errorf("failed to move IF %s to netns: %q", tempName, err)
+	}
+
+	if err := netns.Do(func(_ ns.NetNS) error {
+		// 4. Set Pod IF name
+		if err := s.nLink.LinkSetName(linkObj, podifName); err != nil {
+			return fmt.Errorf("error setting container interface name %s for %s", linkName, tempName)
+		}
+
+		// 5. Bring IF up in Pod netns
+		if err := s.nLink.LinkSetUp(linkObj); err != nil {
+			return fmt.Errorf("error bringing interface up in container ns: %q", err)
+		}
+
+		return nil
+	}); err != nil {
+		return fmt.Errorf("error setting up interface in container namespace: %q", err)
+	}
+	conf.ContIFNames = podifName
+
+	return nil
+}
+
 // ReleaseVF reset a VF from Pod netns and return it to init netns
 func (s *sriovManager) ReleaseVF(conf *types.NetConf, podifName, cid string, netns ns.NetNS) error {
 	initns, err := ns.GetCurrentNS()
@@ -230,33 +282,66 @@ func (s *sriovManager) ApplyVFConfig(conf *types.NetConf) error {
 		}
 	}
 
-	// Set link guid
-	if conf.GUID != "" {
-		if !utils.IsValidGUID(conf.GUID) {
-			return fmt.Errorf("invalid guid %s", conf.GUID)
-		}
-		// save link guid
-		vfLink, err := s.nLink.LinkByName(conf.HostIFNames)
-		if err != nil {
-			return fmt.Errorf("failed to lookup vf %q: %v", conf.HostIFNames, err)
-		}
-
-		conf.HostIFGUID = vfLink.Attrs().HardwareAddr.String()[36:]
-
+	// wyd添加： 非RDMA网卡透传时
+	if !(conf.PFOnly && !conf.PFOnlyIsRDMA) {
 		// Set link guid
-		if err := s.setVfGUID(conf, pfLink, conf.GUID); err != nil {
-			return err
-		}
-	} else {
-		// Verify VF have valid GUID.
-		vfLink, err := s.nLink.LinkByName(conf.HostIFNames)
-		if err != nil {
-			return fmt.Errorf("failed to lookup vf %q: %v", conf.HostIFNames, err)
-		}
+		if conf.GUID != "" {
+			if !utils.IsValidGUID(conf.GUID) {
+				return fmt.Errorf("invalid guid %s", conf.GUID)
+			}
+			// save link guid
+			vfLink, err := s.nLink.LinkByName(conf.HostIFNames)
+			if err != nil {
+				return fmt.Errorf("failed to lookup vf %q: %v", conf.HostIFNames, err)
+			}
 
-		guid := utils.GetGUIDFromHwAddr(vfLink.Attrs().HardwareAddr)
-		if guid == "" || utils.IsAllZeroGUID(guid) || utils.IsAllOnesGUID(guid) {
-			return fmt.Errorf("VF %s GUID is not valid", conf.HostIFNames)
+			conf.HostIFGUID = vfLink.Attrs().HardwareAddr.String()[36:]
+
+			// Set link guid
+			if err := s.setVfGUID(conf, pfLink, conf.GUID); err != nil {
+				return err
+			}
+		} else {
+			// Verify VF have valid GUID.
+			vfLink, err := s.nLink.LinkByName(conf.HostIFNames)
+			if err != nil {
+				return fmt.Errorf("failed to lookup vf %q: %v", conf.HostIFNames, err)
+			}
+
+			guid := utils.GetGUIDFromHwAddr(vfLink.Attrs().HardwareAddr)
+			if guid == "" || utils.IsAllZeroGUID(guid) || utils.IsAllOnesGUID(guid) {
+				return fmt.Errorf("VF %s GUID is not valid", conf.HostIFNames)
+			}
+		}
+	}
+
+
+	return nil
+}
+// ApplyPFConfig configure a PF with parameters given in NetConf
+func (s *sriovManager) ApplyPFConfig(conf *types.NetConf) error {
+	pfLink, err := s.nLink.LinkByName(conf.Master)
+	if err != nil {
+		return fmt.Errorf("failed to lookup master %q: %v", conf.Master, err)
+	}
+
+	// Set link state
+	if conf.LinkState != "" {
+		var state uint32
+		switch conf.LinkState {
+		case "auto":
+			state = netlink.VF_LINK_STATE_AUTO
+		case "enable":
+			state = netlink.VF_LINK_STATE_ENABLE
+		case "disable":
+			state = netlink.VF_LINK_STATE_DISABLE
+		default:
+			// the value should have been validated earlier, return error if we somehow got here
+			return fmt.Errorf("unknown link state %s when setting it for PF %d: %v", conf.LinkState, conf.VFID, err)
+		}
+		// PF可认为index为0 1 2的VF
+		if err = s.nLink.LinkSetVfState(pfLink, conf.VFID, state); err != nil {
+			return fmt.Errorf("failed to set PF %d link state to %d: %v", conf.VFID, state, err)
 		}
 	}
 
@@ -309,17 +394,20 @@ func (s *sriovManager) ResetVFConfig(conf *types.NetConf) error {
 	// Reset link guid
 	// if the host guid is all zeros which is invalid guid replace it with all F guid
 	// This happen when create a VF it guid is all zeros
-	if conf.HostIFGUID != "" {
-		if utils.IsAllZeroGUID(conf.HostIFGUID) {
-			conf.HostIFGUID = "FF:FF:FF:FF:FF:FF:FF:FF"
-		}
+	// wyd添加： 非RDMA网卡透传时
+	if !(conf.PFOnly && !conf.PFOnlyIsRDMA) {
+		if conf.HostIFGUID != "" {
+			if utils.IsAllZeroGUID(conf.HostIFGUID) {
+				conf.HostIFGUID = "FF:FF:FF:FF:FF:FF:FF:FF"
+			}
 
-		if err := s.setVfGUID(conf, pfLink, conf.HostIFGUID); err != nil {
-			return err
+			if err := s.setVfGUID(conf, pfLink, conf.HostIFGUID); err != nil {
+				return err
+			}
+			// setVfGUID cause VF to rebind, which change its name. Lets restore it.
+			// Once setVfGUID wouldn't do rebind to apply GUID this function should be removed
+			return s.restoreVFName(conf)
 		}
-		// setVfGUID cause VF to rebind, which change its name. Lets restore it.
-		// Once setVfGUID wouldn't do rebind to apply GUID this function should be removed
-		return s.restoreVFName(conf)
 	}
 
 	return nil

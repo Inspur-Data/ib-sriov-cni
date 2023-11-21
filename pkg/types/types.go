@@ -26,6 +26,8 @@ type NetConf struct {
 	IBKubernetesEnabled bool   `json:"ibKubernetesEnabled,omitempty"`
 	RdmaNetState        rdmatypes.RdmaNetState
 	RuntimeConfig       RuntimeConf `json:"runtimeConfig,omitempty"`
+	PFOnly              bool   `json:"pfOnly,omitempty"`
+	PFOnlyIsRDMA        bool   `json:"pfOnly,omitempty"`
 	Args                struct {
 		CNI map[string]string `json:"cni"`
 	} `json:"args"`
@@ -42,6 +44,8 @@ type Manager interface {
 	ReleaseVF(conf *NetConf, podifName string, cid string, netns ns.NetNS) error
 	ResetVFConfig(conf *NetConf) error
 	ApplyVFConfig(conf *NetConf) error
+	// 暂时没用，可删除
+	ApplyPFConfig(conf *NetConf) error
 }
 
 // mocked netlink interface

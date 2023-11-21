@@ -96,6 +96,25 @@ func GetPfName(vf string) (string, error) {
 
 	return strings.TrimSpace(files[0].Name()), nil
 }
+// GetPfName returns PF net device name of a given VF pci address
+func GetPfNameByVFPci(pf string) (string, error) {
+	pfSymLink := filepath.Join(SysBusPci, pf, "net")
+	_, err := os.Lstat(pfSymLink)
+	if err != nil {
+		return "", err
+	}
+
+	files, err := os.ReadDir(pfSymLink)
+	if err != nil {
+		return "", err
+	}
+
+	if len(files) < 1 {
+		return "", fmt.Errorf("PF network device not found")
+	}
+
+	return strings.TrimSpace(files[0].Name()), nil
+}
 
 // GetPciAddress takes in a interface(ifName) and VF id and returns returns its pci addr as string
 func GetPciAddress(ifName string, vf int) (string, error) {

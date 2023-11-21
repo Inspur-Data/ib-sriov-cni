@@ -180,6 +180,52 @@ func doVFConfig(sm localtypes.Manager, netConf *localtypes.NetConf, netns ns.Net
 	return nil
 }
 
+// Applies PF config and performs PF setup. if RdmaIso is configured, moves RDMA device into namespace
+func doPFConfig(sm localtypes.Manager, netConf *localtypes.NetConf, netns ns.NetNS, args *skel.CmdArgs) error {
+	err := sm.ApplyVFConfig(netConf)
+	if err != nil {
+		return fmt.Errorf("infiniBand SRI-OV CNI failed to configure VF %q", err)
+	}
+
+	// Note(adrianc): We do this here as ApplyVFCOnfig is rebinding the VF, causing the RDMA device to be recreated.
+	// We do this here due to some un-intuitive kernel behavior (which i hope will change), moving an RDMA device
+	// to namespace causes all of its associated ULP devices (IPoIB) to be recreated in the default namespace,
+	// hence SetupVF needs to occur after moving RDMA device to namespace
+	if netConf.RdmaIso {
+		var rdmaDev string
+		rdmaDev, err = utils.MoveRdmaDevToNsPci(netConf.DeviceID, netns)
+		if err != nil {
+			return err
+		}
+		// Save RDMA state
+		netConf.RdmaNetState.DeviceID = netConf.DeviceID
+		netConf.RdmaNetState.SandboxRdmaDevName = rdmaDev
+		netConf.RdmaNetState.ContainerRdmaDevName = rdmaDev
+		// restore RDMA device back to default namespace in case of error
+		// Note(adrianc): as there is no logging, we have little visibility if the restore operation failed.
+		defer func() {
+			if err != nil {
+				_ = utils.MoveRdmaDevFromNs(netConf.RdmaNetState.ContainerRdmaDevName, netns)
+			}
+		}()
+	}
+
+	err = sm.SetupVF(netConf, args.IfName, args.ContainerID, netns)
+	if err != nil {
+		nsErr := netns.Do(func(_ ns.NetNS) error {
+			_, innerErr := netlink.LinkByName(args.IfName)
+			return innerErr
+		})
+		if nsErr == nil {
+			_ = sm.ReleaseVF(netConf, args.IfName, args.ContainerID, netns)
+		}
+		return fmt.Errorf("failed to set up pod interface %q from the device %q: %v",
+			args.IfName, netConf.DeviceID, err)
+	}
+	return nil
+}
+
+
 // Run the IPAM plugin
 func runIPAMPlugin(stdinData []byte, netConf *localtypes.NetConf) (*current.Result, error) {
 	if netConf.IPAM.Type == ipamDHCP {
@@ -251,12 +297,18 @@ func cmdAdd(args *skel.CmdArgs) error {
 		}
 	}()
 
+
+
+
+
 	result := &current.Result{}
 	result.Interfaces = []*current.Interface{{
 		Name:    args.IfName,
 		Sandbox: netns.Path(),
 	}}
 
+
+	// 调用第三发IPAM
 	if netConf.IPAM.Type != "" {
 		var newResult *current.Result
 		newResult, err = runIPAMPlugin(args.StdinData, netConf)
