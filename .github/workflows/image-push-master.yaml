@@ -1,7 +1,7 @@
 name: "push images on merge to master"
 
 env:
-  IMAGE_NAME: inspurwyd
+  IMAGE_NAME: inspurwyd/${{ github.repository }}
 
 on:
   push:
